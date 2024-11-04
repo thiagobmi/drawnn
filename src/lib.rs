@@ -34,54 +34,58 @@ impl<'a> Trainer<'a> {
         self
     }
 
-    pub fn go(&mut self) {
-        let mut current_error = 0.0;
-        let mut _epochs = 0;
-        loop {
-            let last_error = current_error;
+    // pub fn go(&mut self) {
+    //     let mut current_error = 0.0;
+    //     let mut _epochs = 0;
+    //     loop {
 
-            for example in self.examples {
-                let (inputs, _) = example;
-                let network_data = self.nn.forward(inputs);
-                self.nn.backward(
-                    &example,
-                    network_data,
-                    self.learning_rate,
-                    self.momentum,
-                    &mut self.prev_weights_delta,
-                    &mut self.prev_biases_delta,
-                );
-            }
+    //         let last_error = current_error;
 
-            current_error = self.get_mean_squared_error();
-            let error = (last_error - current_error).abs();
-            sleep(time::Duration::from_millis(50));
-            _epochs += 1;
+    //         for (idx,example) in self.examples.iter().enumerate() {
 
-            // Call the progress callback at each log interval if specified
-            if let Some(interval) = self.log_interval {
-                if _epochs % interval == 0 {
-                    if let Some(callback) = &self.progress_callback {
-                        callback(_epochs, current_error);
-                    }
-                    // println!("Epochs: {:?}; Error: {:?}", _epochs, current_error);
-                }
-            }
+    //             println!("Example: {:?}", idx);
 
-            match self.halt_condition {
-                Epochs(epochs_halt) => {
-                    if _epochs == epochs_halt {
-                        break;
-                    }
-                }
-                MSE(target_error) => {
-                    if error <= target_error {
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    //             let (inputs, _) = example;
+    //             let network_data = self.nn.forward(inputs);
+    //             self.nn.backward(
+    //                 &example,
+    //                 network_data,
+    //                 self.learning_rate,
+    //                 self.momentum,
+    //                 &mut self.prev_weights_delta,
+    //                 &mut self.prev_biases_delta,
+    //             );
+    //         }
+
+    //         current_error = self.get_mean_squared_error();
+    //         let error = (last_error - current_error).abs();
+    //         sleep(time::Duration::from_millis(50));
+    //         _epochs += 1;
+
+    //         // Call the progress callback at each log interval if specified
+    //         if let Some(interval) = self.log_interval {
+    //             if _epochs % interval == 0 {
+    //                 if let Some(callback) = &self.progress_callback {
+    //                     callback(_epochs, current_error);
+    //                 }
+    //                 // println!("Epochs: {:?}; Error: {:?}", _epochs, current_error);
+    //             }
+    //         }
+
+    //         match self.halt_condition {
+    //             Epochs(epochs_halt) => {
+    //                 if _epochs == epochs_halt {
+    //                     break;
+    //                 }
+    //             }
+    //             MSE(target_error) => {
+    //                 if error <= target_error {
+    //                     break;
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
 
     pub fn halt_condition(&mut self, halt_condition: HaltCondition) -> &mut Trainer<'a> {
@@ -150,50 +154,50 @@ impl<'a> Trainer<'a> {
         total_error / count as f64
     }
 
-    // pub fn go(&mut self) {
-    //     let mut current_error = 0.0;
-    //     let mut _epochs = 0;
-    //     loop {
-    //         let last_error = current_error;
+    pub fn go(&mut self) {
+        let mut current_error = 0.0;
+        let mut _epochs = 0;
+        loop {
+            let last_error = current_error;
 
-    //         for example in self.examples {
-    //             let (inputs, _) = example;
-    //             let network_data = self.nn.forward(inputs);
-    //             self.nn.backward(
-    //                 &example,
-    //                 network_data,
-    //                 self.learning_rate,
-    //                 self.momentum,
-    //                 &mut self.prev_weights_delta,
-    //                 &mut self.prev_biases_delta,
-    //             );
-    //         }
+            for example in self.examples {
+                let (inputs, _) = example;
+                let network_data = self.nn.forward(inputs);
+                self.nn.backward(
+                    &example,
+                    network_data,
+                    self.learning_rate,
+                    self.momentum,
+                    &mut self.prev_weights_delta,
+                    &mut self.prev_biases_delta,
+                );
+            }
 
-    //         current_error = self.get_mean_squared_error();
-    //         let error = (last_error - current_error).abs();
-    //         _epochs += 1;
+            current_error = self.get_mean_squared_error();
+            let error = (last_error - current_error).abs();
+            _epochs += 1;
 
-    //         match self.log_interval {
-    //             Some(interval) if _epochs % interval == 0 => {
-    //                 println!("Epochs:{:?}; Error:{:?} ", _epochs, current_error);
-    //             }
-    //             _ => (),
-    //         }
-    //         match self.halt_condition {
-    //             Epochs(epochs_halt) => {
-    //                 if _epochs == epochs_halt {
-    //                     break;
-    //                 }
-    //             }
-    //             MSE(target_error) => {
-    //                 println!("Error: {:?}", error / target_error);
-    //                 if error <= target_error {
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
+            match self.log_interval {
+                Some(interval) if _epochs % interval == 0 => {
+                    println!("Epochs:{:?}; Error:{:?} ", _epochs, current_error);
+                }
+                _ => (),
+            }
+            match self.halt_condition {
+                Epochs(epochs_halt) => {
+                    if _epochs == epochs_halt {
+                        break;
+                    }
+                }
+                MSE(target_error) => {
+                    println!("Error: {:?}", error / target_error);
+                    if error <= target_error {
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 

@@ -1,225 +1,201 @@
-use std::f32::EPSILON;
-use std::io;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::Rect,
+    style::{Color, Style},
+    text::Span,
+    widgets::{Block, Borders, Paragraph},
+    Terminal,
+};
+use std::{io::{self, stdout}, process::exit};
 
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
-use ratatui::symbols::{self, Marker};
-use ratatui::widgets::canvas::{Canvas, Circle, Rectangle};
-use ratatui::widgets::{Block, Borders, Paragraph, RenderDirection, Sparkline};
-use ratatui::Terminal;
+use rusty_net::NN;
+use rusty_net::HaltCondition::Epochs;
 
-use crossterm::event::{self, KeyCode};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use csv::ReaderBuilder;
+use std::fs::File;
 
-use rusty_net::{HaltCondition, NN};
 
-fn main() -> Result<(), io::Error> {
-    // Training examples for the neural network
-    let examples = [
-        (vec![0f64, 0f64], vec![0f64]), // 0 AND 0 = 0
-        (vec![0f64, 1f64], vec![0f64]), // 0 AND 1 = 0
-        (vec![1f64, 0f64], vec![0f64]), // 1 AND 0 = 0
-        (vec![1f64, 1f64], vec![1f64]), // 1 AND 1 = 1
-    ];
+const CANVAS_SIZE: usize = 28;
 
-    let network_layers = vec![2, 7,5, 1];
+fn getchar() {
+    let mut input: String = String::new();
+    let string = std::io::stdin().read_line(&mut input);
+}
 
-    let layers = network_layers.clone();
-    // Shared vector for Ratatui to read data updated by the neural network
-    let data = Arc::new(Mutex::new(vec![0u64]));
-    let data_for_training = Arc::clone(&data);
-    let count_epochs = Arc::new(Mutex::new(0));
-    let current_error = Arc::new(Mutex::new(0.0));
 
-    let count_epochs_for_ui = Arc::clone(&count_epochs);
-    let current_error_for_ui = Arc::clone(&current_error);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize terminal and configure backend
+    
 
-    // Start training in a separate thread
-    thread::spawn(move || {
-        let l = network_layers.clone();
-        let mut net = NN::new(&l);
-        let epoch_count = Arc::new(Mutex::new(0));
-        let epoch_count_for_training = Arc::clone(&epoch_count);
+    let mut nn  = NN::new(&vec![784, 100, 10]);
 
-        net.train(&examples)
-            .halt_condition(HaltCondition::MSE((EPSILON as f64)))
-            .log_interval(Some(1))
-            .momentum(0.1)
-            .rate(0.3)
-            .progress_callback(move |_progress, error| {
-                let mut epoch_count = epoch_count_for_training.lock().unwrap();
-                *current_error.lock().unwrap() = error;
-                *count_epochs.lock().unwrap() = _progress;
+    let file = File::open("./samples/train.csv")?;
 
-                // *epoch_count += 1;
-                let mut data = data_for_training.lock().unwrap();
-                data.push((error / EPSILON as f64) as u64); // Add the current epoch count for display
-                                                            // if data.len() > 10 { data.remove(0); } // Limit vector length
-            })
-            .go();
-    });
+    // Create a CSV reader with default options.
+    let mut rdr = ReaderBuilder::new().from_reader(file);
 
-    // Terminal setup for Ratatui
-    enable_raw_mode()?;
-    let stdout = io::stdout();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut inputs: Vec<Vec<f64>> = Vec::new();
+    let mut outputs: Vec<Vec<f64>> = Vec::new();
 
-    let refresh_rate = Duration::from_millis(100);
-    let mut last_update = Instant::now();
-
-    // clear screen
-    terminal.clear()?;
-
-    loop {
-        // Quit on 'q' press
-        if event::poll(Duration::from_millis(500))? {
-            if let event::Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break;
-                }
+    for result in rdr.records() {
+        let record = result?;
+        let mut input = Vec::with_capacity(784);
+        let mut output = vec![0.0; 10];
+        
+        for (i, value) in record.iter().enumerate() {
+            if i == 0 {
+                output[value.parse::<usize>()?] = 1.0;
+            } else {
+                input.push(value.parse::<f64>()?);
             }
         }
 
-        // Update data for Ratatui at intervals
-        if last_update.elapsed() >= refresh_rate {
-            last_update = Instant::now();
+        inputs.push(input);
+        outputs.push(output);
+    }
 
-            let data = data.lock().unwrap().clone();
+    let examples: Vec<(Vec<f64>, Vec<f64>)> = inputs.into_iter().zip(outputs.into_iter()).collect();
 
-            terminal.draw(|f| {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .margin(0)
-                    .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-                    .split(f.area());
+    println!("Training...");
 
-                // Draw the topology on a canvas in the top part
-                let canvas = Canvas::default()
-                    .block(
-                        Block::default()
-                            .title("Neural Network Topology")
-                            .borders(Borders::ALL),
-                    )
-                    .paint(|ctx| {
-                        let width = chunks[0].width as f64;
-                        let height = chunks[0].height as f64;
+    nn.train(&examples).momentum(0.9).log_interval(Some(1)).halt_condition(Epochs(100)).go();
 
-                        // Calculate layer positions
-                        let layer_spacing = width / (layers.len() as f64 + 1.0);
-                        for (i, &nodes) in layers.iter().enumerate() {
-                            let x = (i as f64 + 1.0) * layer_spacing;
-
-                            // Calculate node positions within each layer
-                            let node_spacing = height / (nodes as f64 + 1.0);
-                            for j in 0..nodes {
-                                let y = (j as f64 + 1.0) * node_spacing;
+    println!("Training done!");
 
 
-                                ctx.draw(&Rectangle {
-                                    x: x - 1.0,
-                                    y: y - 1.0,
-                                    width: 2.0,
-                                    height: 2.0,
-                                    color: Color::White,
-                                });
+    // Create a CSV reader with default options
 
-                                // Draw multiple concentric circles to simulate a filled circle
-                                // let radius = 1.0; // Adjust to set the circle's overall size
-                                // let fill_steps = 5; // Number of circles to draw for filling effect
 
-                                // Draw lines connecting nodes to the next layer
-                                if i < layers.len() - 1 {
-                                    let next_nodes = layers[i + 1];
-                                    let next_node_spacing = height / (next_nodes as f64 + 1.0);
-                                    for k in 0..next_nodes {
-                                        let next_y = (k as f64 + 1.0) * next_node_spacing;
-                                        let next_x = (i as f64 + 2.0) * layer_spacing;
-                                        ctx.draw(&ratatui::widgets::canvas::Line {
-                                            x1: x,
-                                            y1: y,
-                                            x2: next_x,
-                                            y2: next_y,
-                                            color: Color::Blue,
-                                        });
-                                    }
+    for example in examples{
+        let (input, output) = example;
+        let guess = nn.run(&input);
+        let exp_sum: f64 = guess.iter().map(|&x| x.exp()).sum();
+        let softmax: Vec<f64> = guess.iter().map(|&x| x.exp() / exp_sum).collect();
+
+        println!("Softmax Guess: {:?}", softmax);
+        println!("Output: {:?}", output);
+        getchar();
+    }
+
+
+
+
+    exit(0);
+
+    let mut stdout = stdout();
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Enable raw mode and mouse capture for terminal
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(terminal.backend_mut(), EnableMouseCapture)?;
+
+    // Initialize canvas and drawing flag
+    let mut canvas = [[false; CANVAS_SIZE]; CANVAS_SIZE];
+    let mut drawing = false;
+
+    // Clear terminal on start
+    terminal.clear()?;
+
+    loop {
+        // Calculate terminal size and widget dimensions
+        let size = terminal.size()?;
+        let cell_width = 2; // Each block occupies 2 columns width-wise
+        let cell_height = 1;
+        let widget_width = CANVAS_SIZE as u16 * cell_width;
+        let widget_height = CANVAS_SIZE as u16 * cell_height;
+
+        // Positioning offsets for the canvas and reset button
+        let x_offset = 0;
+        let y_offset = 0;
+
+        // Define the area for the canvas block with a bottom-right reset button
+        let block_area = Rect::new(x_offset, y_offset, widget_width + 2, widget_height + 3);
+        let reset_button_area = Rect::new(
+            block_area.x + block_area.width - 9,  // Right-aligned within the canvas widget
+            block_area.y + block_area.height - 2, // Positioned at the bottom of the widget
+            7,
+            1,
+        );
+
+        // Draw canvas, reset button, and grid
+        terminal.draw(|f| {
+            // Create bordered canvas block
+            let block = Block::default()
+                .title(Span::styled("Draw a number!", Style::default().fg(Color::Cyan)))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::White));
+
+            f.render_widget(block, block_area);
+
+            // Render the reset button at the bottom-right of the canvas
+            let reset_button = Paragraph::new(Span::styled(" Reset ", Style::default().bg(Color::Red).fg(Color::White)));
+            f.render_widget(reset_button, reset_button_area);
+
+            // Render each cell in the 28x28 grid, each occupying a 2x1 area on the screen
+            for y in 0..CANVAS_SIZE {
+                for x in 0..CANVAS_SIZE {
+                    let color = if canvas[y][x] { Color::White } else { Color::Black };
+                    let cell = Paragraph::new(Span::styled("  ", Style::default().bg(color))); // Two spaces to cover 2 columns
+                    let area = Rect::new(
+                        x_offset + 1 + x as u16 * cell_width, // Adjust for left border
+                        y_offset + 1 + y as u16 * cell_height, // Adjust for top border
+                        cell_width,
+                        cell_height,
+                    );
+                    f.render_widget(cell, area);
+                }
+            }
+        })?;
+
+        // Handle events (mouse and keyboard)
+        if event::poll(std::time::Duration::from_millis(10))? {
+            match event::read()? {
+                Event::Mouse(event) => {
+                    let x = event.column as u16;
+                    let y = event.row as u16;
+
+                    // Check if the reset button was clicked
+                    if x >= reset_button_area.x
+                        && x < reset_button_area.x + reset_button_area.width
+                        && y >= reset_button_area.y
+                        && y < reset_button_area.y + reset_button_area.height
+                        && event.kind == MouseEventKind::Down(MouseButton::Left)
+                    {
+                        canvas = [[false; CANVAS_SIZE]; CANVAS_SIZE]; // Clear canvas
+                    } else {
+                        // Calculate block coordinates in the canvas grid
+                        let block_x = ((x as usize).saturating_sub(x_offset as usize + 1)) / cell_width as usize;
+                        let block_y = ((y as usize).saturating_sub(y_offset as usize + 1)) / cell_height as usize;
+
+                        // Draw on the canvas if within bounds
+                        if block_x < CANVAS_SIZE && block_y < CANVAS_SIZE {
+                            match event.kind {
+                                MouseEventKind::Down(_) => {
+                                    drawing = true;
+                                    canvas[block_y][block_x] = true;
                                 }
-
-                                // for k in (0..=fill_steps).rev() {
-                                //     ctx.draw(&Circle {
-                                //         x,
-                                //         y,
-                                //         radius: radius * (k as f64 / fill_steps as f64),
-                                //         color: Color::White,
-                                //     });
-                                // }
-
+                                MouseEventKind::Drag(_) if drawing => {
+                                    canvas[block_y][block_x] = true;
+                                }
+                                MouseEventKind::Up(_) => {
+                                    drawing = false;
+                                }
+                                _ => {}
                             }
                         }
-                    })
-                    .x_bounds([0.0, chunks[0].width as f64])
-                    .y_bounds([0.0, chunks[0].height as f64]);
-
-                f.render_widget(canvas, chunks[0]);
-
-                // Further split chunks[0] to add text in the top-right corner
-                let sparkline_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(10), Constraint::Percentage(90)].as_ref())
-                    .split(chunks[1]);
-
-                let display_data = {
-                    let width = sparkline_chunks[0].width as usize;
-
-                    // If data length exceeds width, take only the last `width` elements
-                    if data.len() > width {
-                        data[data.len() - width..].to_vec()
-                    } else {
-                        data.clone() // If data is within width, clone the whole data
                     }
-                };
-
-                let spark = Sparkline::default()
-                    .block(
-                        Block::default()
-                            .title("Training")
-                            .borders(ratatui::widgets::Borders::ALL),
-                    )
-                    .data(&display_data)
-                    .direction(RenderDirection::LeftToRight)
-                    .style(Style::default().fg(Color::Red))
-                    .absent_value_symbol(symbols::shade::FULL);
-
-                f.render_widget(spark, sparkline_chunks[1]);
-
-                // Display the top-right text
-                let epoch_count = *count_epochs_for_ui.lock().unwrap();
-                let error = *current_error_for_ui.lock().unwrap();
-
-                let bottom_left_text = Paragraph::new(format!("Epoch: {}", epoch_count))
-                    .style(Style::default().fg(Color::White))
-                    .alignment(ratatui::layout::Alignment::Left);
-
-                let top_right_text = Paragraph::new(format!("Error: {:.6}", error))
-                    .style(Style::default().fg(Color::White))
-                    .alignment(ratatui::layout::Alignment::Right);
-
-                f.render_widget(bottom_left_text, sparkline_chunks[0]);
-
-                f.render_widget(top_right_text, sparkline_chunks[0]);
-
-                // let paragraph = Paragraph::new("Hello, world!").block(Block::bordered().title("Paragraph"));
-                // f.render_widget(paragraph, chunks[1]);
-            })?;
+                }
+                Event::Key(key) if key.code == KeyCode::Char('q') => break, // Quit on 'q' key
+                _ => {}
+            }
         }
     }
 
-    // Clean up the terminal
-    disable_raw_mode()?;
+    // Restore terminal settings
+    crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    crossterm::terminal::disable_raw_mode()?;
     terminal.show_cursor()?;
 
     Ok(())
