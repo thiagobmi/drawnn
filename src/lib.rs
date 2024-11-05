@@ -1,6 +1,7 @@
-use rand::Rng;
-use core::time;
-use std::{thread::sleep, vec};
+use rand::{thread_rng, Rng};
+use std::vec;
+use rand_distr::{Distribution, Normal};
+use std::f64::EPSILON;
 
 static DEFAULT_LEARNING_RATE: f64 = 0.3f64;
 static DEFAULT_MOMENTUM: f64 = 0f64;
@@ -19,75 +20,10 @@ pub struct Trainer<'a> {
     log_interval: Option<u32>,
     prev_weights_delta: Vec<Vec<Vec<f64>>>,
     prev_biases_delta: Vec<Vec<f64>>,
-    progress_callback: Option<Box<dyn Fn(u32, f64)>>,
     nn: &'a mut NN,
 }
 
 impl<'a> Trainer<'a> {
-
-
-    pub fn progress_callback<F>(&mut self, callback: F) -> &mut Trainer<'a>
-    where
-        F: Fn(u32, f64) + 'static,
-    {
-        self.progress_callback = Some(Box::new(callback));
-        self
-    }
-
-    // pub fn go(&mut self) {
-    //     let mut current_error = 0.0;
-    //     let mut _epochs = 0;
-    //     loop {
-
-    //         let last_error = current_error;
-
-    //         for (idx,example) in self.examples.iter().enumerate() {
-
-    //             println!("Example: {:?}", idx);
-
-    //             let (inputs, _) = example;
-    //             let network_data = self.nn.forward(inputs);
-    //             self.nn.backward(
-    //                 &example,
-    //                 network_data,
-    //                 self.learning_rate,
-    //                 self.momentum,
-    //                 &mut self.prev_weights_delta,
-    //                 &mut self.prev_biases_delta,
-    //             );
-    //         }
-
-    //         current_error = self.get_mean_squared_error();
-    //         let error = (last_error - current_error).abs();
-    //         sleep(time::Duration::from_millis(50));
-    //         _epochs += 1;
-
-    //         // Call the progress callback at each log interval if specified
-    //         if let Some(interval) = self.log_interval {
-    //             if _epochs % interval == 0 {
-    //                 if let Some(callback) = &self.progress_callback {
-    //                     callback(_epochs, current_error);
-    //                 }
-    //                 // println!("Epochs: {:?}; Error: {:?}", _epochs, current_error);
-    //             }
-    //         }
-
-    //         match self.halt_condition {
-    //             Epochs(epochs_halt) => {
-    //                 if _epochs == epochs_halt {
-    //                     break;
-    //                 }
-    //             }
-    //             MSE(target_error) => {
-    //                 if error <= target_error {
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
-
-
     pub fn halt_condition(&mut self, halt_condition: HaltCondition) -> &mut Trainer<'a> {
         match halt_condition {
             Epochs(epochs) if epochs < 1 => {
@@ -133,6 +69,35 @@ impl<'a> Trainer<'a> {
         self
     }
 
+
+    fn get_cross_entropy_loss(&self) -> f64 {
+        let (total_error, count) =
+            self.examples
+                .iter()
+                .fold((0.0, 0), |(acc_error, acc_count), example| {
+                    let (inputs, expected_outputs) = example;
+                    let (_, outputs) = self.nn.forward(inputs);
+                    let output = outputs.last().unwrap();
+
+                    // Calculate cross-entropy error for this example
+                    let error: f64 = expected_outputs
+                        .iter()
+                        .zip(output)
+                        .map(|(expected, actual)| {
+                            let actual_clamped = actual.clamp(EPSILON, 1.0 - EPSILON);
+                            -expected * actual_clamped.ln() - (1.0 - expected) * (1.0 - actual_clamped).ln()
+                        })
+                        .sum();
+
+                    (acc_error + error, acc_count + expected_outputs.len())
+                });
+
+        // Return the average cross-entropy loss
+        total_error / count as f64
+    }
+
+
+    
     fn get_mean_squared_error(&self) -> f64 {
         let (total_error, count) =
             self.examples
@@ -163,6 +128,7 @@ impl<'a> Trainer<'a> {
             for example in self.examples {
                 let (inputs, _) = example;
                 let network_data = self.nn.forward(inputs);
+                // println!("Network Data: {:?}", network_data.1.last().unwrap());
                 self.nn.backward(
                     &example,
                     network_data,
@@ -173,7 +139,7 @@ impl<'a> Trainer<'a> {
                 );
             }
 
-            current_error = self.get_mean_squared_error();
+            current_error = self.get_cross_entropy_loss();
             let error = (last_error - current_error).abs();
             _epochs += 1;
 
@@ -199,9 +165,6 @@ impl<'a> Trainer<'a> {
         }
     }
 }
-
-
-
 
 pub struct NN {
     layers: Vec<u32>,
@@ -373,27 +336,27 @@ impl NN {
     }
 
     fn generate_weights(&mut self) {
-        let mut rng = rand::thread_rng();
-        self.weights = self
-            .layers
-            .windows(2)
-            .map(|layer_pair| {
-                (0..layer_pair[1])
-                    .map(|_| {
-                        (0..layer_pair[0])
-                            .map(|_| rng.gen_range(-1.0..1.0))
-                            .collect()
-                    })
-                    .collect()
-            })
-            .collect();
 
-        self.biases = self
-            .layers
-            .iter()
-            .skip(1)
-            .map(|&l| (0..l).map(|_| rng.gen_range(-1.0..1.0)).collect())
-            .collect();
+        let mut rng = thread_rng();
+        
+        self.weights = self.layers.windows(2).map(|layer_pair| {
+            let fan_in = layer_pair[0] as f64;
+            let he_std_dev = (2.0 / fan_in).sqrt();
+            let normal_dist = Normal::new(0.0, he_std_dev).unwrap();
+            
+            (0..layer_pair[1])
+                .map(|_| {
+                    (0..layer_pair[0])
+                        .map(|_| normal_dist.sample(&mut rng))
+                        .collect()
+                })
+                .collect()
+        }).collect();
+    
+        let normal_dist = Normal::new(0.0, 1.0).unwrap();
+        self.biases = self.layers.iter().skip(1).map(|&l| {
+            (0..l).map(|_| normal_dist.sample(&mut rng)).collect()
+        }).collect();
     }
 
     pub fn train<'a>(&'a mut self, examples: &'a [(Vec<f64>, Vec<f64>)]) -> Trainer {
@@ -425,7 +388,6 @@ impl NN {
             halt_condition: Epochs(DEFAULT_EPOCHS),
             log_interval: None,
             nn: self,
-            progress_callback: None,
         }
     }
 
@@ -440,5 +402,13 @@ impl NN {
 
     fn sigmoid(y: f64) -> f64 {
         1f64 / (1f64 + (-y).exp())
+    }
+
+    fn relu(x: f64) -> f64 {
+        x.max(0.0)
+    }
+    
+    fn relu_derivative(x: f64) -> f64 {
+        if x > 0.0 { 1.0 } else { 0.0 }
     }
 }

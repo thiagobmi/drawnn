@@ -28,9 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize terminal and configure backend
     
 
-    let mut nn  = NN::new(&vec![784, 100, 10]);
+    let mut nn  = NN::new(&vec![784, 512, 10]);
 
-    let file = File::open("./samples/train.csv")?;
+    let file = File::open("./samples/train2.csv")?;
 
     // Create a CSV reader with default options.
     let mut rdr = ReaderBuilder::new().from_reader(file);
@@ -47,10 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if i == 0 {
                 output[value.parse::<usize>()?] = 1.0;
             } else {
-                input.push(value.parse::<f64>()?);
+                input.push(value.parse::<f64>()?/255.0);
             }
         }
 
+        println!("{:?}",output);
         inputs.push(input);
         outputs.push(output);
     }
@@ -59,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Training...");
 
-    nn.train(&examples).momentum(0.9).log_interval(Some(1)).halt_condition(Epochs(100)).go();
+    nn.train(&examples).momentum(0.9).log_interval(Some(1)).halt_condition(Epochs(50)).rate(0.001).go();
 
     println!("Training done!");
 
@@ -67,13 +68,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a CSV reader with default options
 
 
-    for example in examples{
+    for example in examples {
         let (input, output) = example;
         let guess = nn.run(&input);
+    
+        // Calculate the softmax (if you still need it, but seems like you want to create labels instead)
         let exp_sum: f64 = guess.iter().map(|&x| x.exp()).sum();
         let softmax: Vec<f64> = guess.iter().map(|&x| x.exp() / exp_sum).collect();
-
+    
+        // Print softmax guess for debugging
         println!("Softmax Guess: {:?}", softmax);
+    
+        // Create a label vector where the largest value's index is set to 1.0, others to 0.0
+        let mut label = vec![0.0; softmax.len()];
+        if let Some((max_index, _)) = softmax
+            .iter()
+            .enumerate()
+            .fold(None, |acc, (index, &value)| {
+                match acc {
+                    Some((max_idx, max_val)) if value > max_val => Some((index, value)),
+                    None => Some((index, value)),
+                    _ => acc,
+                }
+            }) 
+        {
+            label[max_index] = 1.0;
+        }
+    
+        // Print the created label vector
+        println!("Label: {:?}", label);
         println!("Output: {:?}", output);
         getchar();
     }
