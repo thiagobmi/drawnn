@@ -2,25 +2,27 @@ use rand::{thread_rng, Rng};
 use std::vec;
 use rand_distr::{Distribution, Normal};
 use std::f64::EPSILON;
-use serde_json;
-use std::fs;
-use serde_json::Value;
+use serde::{Serialize, Deserialize};
 
 static DEFAULT_LEARNING_RATE: f64 = 0.3f64;
 static DEFAULT_MOMENTUM: f64 = 0f64;
 static DEFAULT_EPOCHS: u32 = 1000;
 
+#[derive(Serialize, Deserialize)]
 pub enum HaltCondition {
     Epochs(u32),
     MSE(f64),
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum ActivationFunction {
     ReLU,
     Sigmoid,
     LeakyReLU,
+    TanH
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum LossFunction {
     MeanSquaredError,
     CrossEntropy,
@@ -187,12 +189,12 @@ impl<'a> Trainer<'a> {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct NN {
     layers: Vec<u32>,
-    weights: Vec<Vec<Vec<f64>>>,
-    biases: Vec<Vec<f64>>,
-    activation_function: fn(f64) -> f64,
-    activation_derivative: fn(f64) -> f64,
+    pub weights: Vec<Vec<Vec<f64>>>,
+    pub biases: Vec<Vec<f64>>,
+    activation: ActivationFunction,
 }
 
 impl NN {
@@ -201,22 +203,40 @@ impl NN {
         outputs.last().unwrap().clone()
     }
 
+
+    pub fn save_to_json(&self, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let json_string = serde_json::to_string_pretty(self)?;
+        std::fs::write(filename, json_string)?;
+        Ok(())
+    }
+
+    pub fn load_from_json(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let json_string = std::fs::read_to_string(filename)?;
+        let nn: NN = serde_json::from_str(&json_string)?;
+        Ok(nn)
+    }
+
+    fn get_activation_function(&self) -> fn(f64) -> f64 {
+        match self.activation {
+            ActivationFunction::ReLU => Self::relu,
+            ActivationFunction::Sigmoid => Self::sigmoid,
+            ActivationFunction::LeakyReLU => Self::leaky_relu,
+            ActivationFunction::TanH => Self::tanh,
+        }
+    }
+
+    fn get_activation_derivative(&self) -> fn(f64) -> f64 {
+        match self.activation {
+            ActivationFunction::ReLU => Self::relu_derivative,
+            ActivationFunction::Sigmoid => Self::sigmoid_derivative,
+            ActivationFunction::LeakyReLU => Self::leaky_relu_derivative,
+            ActivationFunction::TanH => Self::tanh_derivative,
+        }
+    }
+
     pub fn activation(&mut self, activation: ActivationFunction) -> &mut NN {
         
-        match activation {
-            ActivationFunction::ReLU => {
-                self.activation_function = Self::relu;
-                self.activation_derivative = Self::relu_derivative;
-            }
-            ActivationFunction::Sigmoid => {
-                self.activation_function = Self::sigmoid;
-                self.activation_derivative = Self::sigmoid_derivative;
-            }
-            ActivationFunction::LeakyReLU => {
-                self.activation_function = Self::leaky_relu;
-                self.activation_derivative = Self::leaky_relu_derivative;
-            }
-        }
+        self.activation = activation;
         self
     }
     
@@ -229,14 +249,15 @@ impl NN {
     }
 
     fn forward(&self, data: &Vec<f64>) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+
         let input = data;
         let num_layers = self.layers.len();
 
         let mut neuron_outputs: Vec<Vec<f64>> = Vec::with_capacity(num_layers);
         let mut neuron_inputs: Vec<Vec<f64>> = Vec::with_capacity(num_layers);
-
+        let activation_function = self.get_activation_function();
         let initial_inputs = Self::compute_layer_input(&input, &self.weights[0], &self.biases[0]);
-        let initial_outputs = initial_inputs.iter().map(|&x| (self.activation_function)(x)).collect();
+        let initial_outputs = initial_inputs.iter().map(|&x| activation_function(x)).collect();
 
         neuron_inputs.push(initial_inputs);
         neuron_outputs.push(initial_outputs);
@@ -248,7 +269,7 @@ impl NN {
                 &self.weights[layer_index],
                 &self.biases[layer_index],
             );
-            let layer_outputs = layer_inputs.iter().map(|&x| (self.activation_function)(x)).collect();
+            let layer_outputs = layer_inputs.iter().map(|&x| activation_function(x)).collect();
 
             neuron_inputs.push(layer_inputs);
             neuron_outputs.push(layer_outputs);
@@ -326,8 +347,9 @@ impl NN {
         let (inputs, outputs) = data;
         let num_layers = self.layers.len();
         let (_, neuron_outputs) = network_data;
+        let activation_derivative = self.get_activation_derivative();
         let last_output = neuron_outputs.last().unwrap();
-        let mut deltas: Vec<Vec<f64>> = vec![Self::compute_output_delta(last_output, outputs, self.activation_derivative)];
+        let mut deltas: Vec<Vec<f64>> = vec![Self::compute_output_delta(last_output, outputs, activation_derivative)];
 
         for index in (2..num_layers).rev() {
             let delta_index = num_layers - index - 1;
@@ -347,7 +369,7 @@ impl NN {
                 &deltas[delta_index],
                 &self.weights[index - 1],
                 &neuron_outputs[index - 2],
-                self.activation_derivative,
+                activation_derivative,
             );
             deltas.push(current_delta);
         }
@@ -373,8 +395,7 @@ impl NN {
             layers: layers.clone(),
             weights: vec![],
             biases: vec![],
-            activation_function: Self::sigmoid,
-            activation_derivative: Self::sigmoid_derivative,
+            activation: ActivationFunction::Sigmoid,
         };
 
         // nn.generate_weights();
@@ -465,58 +486,7 @@ impl NN {
         }
     }
 
-    pub fn save_as_json(&self, path: &str) {
-        let json = serde_json::json!({
-            "layers": self.layers,
-            "weights": self.weights,
-            "biases": self.biases,
-        });
 
-        let serialized = serde_json::to_string_pretty(&json).unwrap();
-        std::fs::write(path, serialized).unwrap();
-    }
-
-    pub fn load_from_json(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-
-        let contents = fs::read_to_string(path)?;
-        let json: Value = serde_json::from_str(&contents)?;
-
-        let layers: Vec<u32> = serde_json::from_value(json["layers"].clone())?;
-        
-        let mut nn = NN::new(&layers);
-        
-        nn.weights = serde_json::from_value(json["weights"].clone())?;
-        
-        nn.biases = serde_json::from_value(json["biases"].clone())?;
-        
-        if nn.weights.len() != layers.len() - 1 {
-            return Err("Invalid weights structure in JSON file".into());
-        }
-        
-        if nn.biases.len() != layers.len() - 1 {
-            return Err("Invalid biases structure in JSON file".into());
-        }
-        
-        for (i, weight_layer) in nn.weights.iter().enumerate() {
-            if weight_layer.len() != layers[i + 1] as usize {
-                return Err(format!("Invalid weights dimension at layer {}", i).into());
-            }
-            
-            for weights in weight_layer {
-                if weights.len() != layers[i] as usize {
-                    return Err(format!("Invalid weights dimension at layer {}", i).into());
-                }
-            }
-        }
-        
-        for (i, bias_layer) in nn.biases.iter().enumerate() {
-            if bias_layer.len() != layers[i + 1] as usize {
-                return Err(format!("Invalid biases dimension at layer {}", i).into());
-            }
-        }
-        
-        Ok(nn)
-    }
 
     fn dot_product(first: &[f64], second: &[f64]) -> Result<f64, &'static str> {
         if first.len() != second.len() {
@@ -555,4 +525,11 @@ impl NN {
         if x > 0.0 { 1.0 } else { 0.01 }
     }
 
+    fn tanh(x: f64) -> f64 {
+        x.tanh()
+    }
+
+    fn tanh_derivative(x: f64) -> f64 {
+        1.0 - x.powi(2)
+    }
 }
